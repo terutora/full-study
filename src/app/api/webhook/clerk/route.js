@@ -1,3 +1,4 @@
+/*{
 // src/app/api/webhook/clerk/route.js
 import { Webhook } from "svix";
 import { headers } from "next/headers";
@@ -80,3 +81,4 @@ export async function POST(req) {
 
   return NextResponse.json({ message: `Webhook received: ${type}` });
 }
+}*/

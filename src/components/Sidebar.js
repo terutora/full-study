@@ -69,7 +69,6 @@ export default function Sidebar() {
             </div>
           )}
         </div>
-
         {/* ナビゲーションリンク */}
         <div className="py-4 flex-1 overflow-y-auto">
           <ul className="space-y-1">
@@ -83,14 +82,15 @@ export default function Sidebar() {
             ))}
           </ul>
         </div>
-
         {/* 設定リンク */}
+        {/* 
         <div className="border-t border-indigo-600 p-4">
           <Link href="/settings" className="flex items-center text-indigo-100 hover:text-white">
             <span className="mr-3">⚙️</span>
             {isOpen && <span>設定</span>}
           </Link>
         </div>
+         */}
       </div>
     </aside>
   );

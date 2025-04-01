@@ -38,7 +38,7 @@ export default function Home() {
           <Link href="/auth/signup" className="px-8 py-3 bg-indigo-600 text-white font-medium rounded-md hover:bg-indigo-700 transition-colors">
             無料で始める
           </Link>
-          <Link href="/auth/login" className="px-8 py-3 border border-indigo-600 text-indigo-600 font-medium rounded-md hover:bg-indigo-50 transition-colors">
+          <Link href="/auth/signin" className="px-8 py-3 border border-indigo-600 text-indigo-600 font-medium rounded-md hover:bg-indigo-50 transition-colors">
             ログイン
           </Link>
         </div>

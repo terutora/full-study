@@ -3,6 +3,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useUser } from "@clerk/nextjs";
+import { timerService, testSupabaseConnection } from "@/lib/supabase";
 
 export default function Timer() {
   // ポモドーロタイマーの状態
@@ -18,6 +19,22 @@ export default function Timer() {
   // 学習時間の状態
   const [todayStudyTime, setTodayStudyTime] = useState(0);
   const [todayPomodoros, setTodayPomodoros] = useState(0);
+
+  // データ読み込み状態
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [useLocalStorage, setUseLocalStorage] = useState(true); // 最初からローカルストレージを使用
+  const [forceLocalStorage, setForceLocalStorage] = useState(false); // 強制的にローカルストレージを使用するかどうか
+  const [debug, setDebug] = useState(false); // デバッグモード
+  const [debugOutput, setDebugOutput] = useState([]); // デバッグ出力
+  const [tableContent, setTableContent] = useState([]); // テーブル内容
+
+  // Supabase接続テスト結果
+  const [connectionTestResult, setConnectionTestResult] = useState(null);
+  const [supabaseEnv, setSupabaseEnv] = useState({
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL ? "設定済み" : "未設定",
+    key: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "設定済み" : "未設定",
+  });
 
   // 現在時刻の状態
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -54,50 +71,149 @@ export default function Timer() {
     longBreak: "bg-blue-400",
   };
 
-  // src/app/timer/page.js の loadStudyData と saveStudyData 関数を修正
-  // ローカルストレージを使用したバージョン
+  // デバッグログを追加
+  const logDebug = (message, data = null) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const logEntry = {
+      time: timestamp,
+      message: message,
+      data: data,
+    };
+    setDebugOutput((prev) => [...prev, logEntry]);
+    console.log(`[DEBUG] ${message}`, data);
+  };
 
-  // APIからデータをロードする関数（ローカルストレージ版）
-  const loadStudyData = async () => {
-    if (typeof window === "undefined") return; // サーバーサイドでは実行しない
+  // Supabase接続テスト実行
+  const runConnectionTest = async () => {
+    setConnectionTestResult({ testing: true });
+    try {
+      logDebug("接続テスト実行中...");
+      const result = await testSupabaseConnection();
+      setConnectionTestResult(result);
+      logDebug("接続テスト結果:", result);
+
+      // 接続成功かつ強制モードでなければSupabaseを使用
+      if (result.success && !forceLocalStorage) {
+        setUseLocalStorage(false);
+      } else {
+        setUseLocalStorage(true);
+      }
+    } catch (error) {
+      logDebug("接続テスト例外:", error);
+      setConnectionTestResult({ success: false, error });
+      setUseLocalStorage(true);
+    }
+  };
+
+  // データストレージモードの切替
+  const toggleStorageMode = () => {
+    // 強制的にローカルストレージを使うかどうかをトグル
+    const newForceMode = !forceLocalStorage;
+    setForceLocalStorage(newForceMode);
+
+    // 強制モードが有効なら、ローカルストレージを使用
+    if (newForceMode) {
+      setUseLocalStorage(true);
+      logDebug("ストレージモード: ローカルストレージを強制");
+    } else {
+      // 最新の接続テスト結果に基づいて設定
+      const newUseLocal = !connectionTestResult?.success;
+      setUseLocalStorage(newUseLocal);
+      logDebug(`ストレージモード: ${newUseLocal ? "ローカルストレージ" : "Supabase"}`);
+    }
+  };
+
+  // デバッグモードの切替
+  const toggleDebugMode = () => {
+    setDebug(!debug);
+  };
+
+  // テストデータ作成
+  const createTestData = async () => {
+    if (!isSignedIn || !user) {
+      logDebug("テストデータ作成: ユーザーがログインしていません");
+      return;
+    }
 
     try {
-      // ローカルストレージからデータをロード
-      const today = new Date().toISOString().split("T")[0];
-      const storageKey = `studyData_${today}`;
+      logDebug("テストデータ作成開始");
+      const result = await timerService.createTestData(user.id);
+      logDebug("テストデータ作成成功:", result);
+      alert("テストデータを作成しました！");
+
+      // テーブル内容を更新
+      showTableContent();
+    } catch (error) {
+      logDebug("テストデータ作成エラー:", error);
+      alert(`テストデータ作成エラー: ${error.message || "不明なエラー"}`);
+    }
+  };
+
+  // テーブル内容確認
+  const showTableContent = async () => {
+    try {
+      logDebug("テーブル内容確認開始");
+      const result = await timerService.showTableContent();
+      logDebug("テーブル内容取得成功:", result);
+      setTableContent(result || []);
+    } catch (error) {
+      logDebug("テーブル内容取得エラー:", error);
+      setTableContent([]);
+    }
+  };
+
+  // 全てのデータを取得
+  const getAllData = async () => {
+    try {
+      logDebug("全データ取得開始");
+      const result = await timerService.getAllTimerData();
+      logDebug("全データ取得成功:", result);
+      setTableContent(result || []);
+    } catch (error) {
+      logDebug("全データ取得エラー:", error);
+      setTableContent([]);
+    }
+  };
+
+  // 初期化時に接続テスト実行
+  useEffect(() => {
+    runConnectionTest();
+    logDebug("初期化完了");
+    logDebug("ユーザー情報:", isSignedIn ? { id: user?.id } : "未ログイン");
+  }, [isSignedIn, user]);
+
+  // ローカルストレージからデータをロードする関数
+  const loadFromLocalStorage = async () => {
+    logDebug("ローカルストレージからデータをロード中");
+    const today = new Date().toISOString().split("T")[0];
+    const storageKey = `studyData_${today}`;
+
+    try {
       const storedData = localStorage.getItem(storageKey);
 
       if (storedData) {
         const data = JSON.parse(storedData);
-        setTodayStudyTime(data.todayStudyTime || 0);
-        setTodayPomodoros(data.todayPomodoros || 0);
-        console.log("Loaded study data from local storage:", data);
-      }
-
-      // API呼び出しは後で実装
-      // 開発中はローカルストレージのみを使用
-      /*
-      const response = await fetch(`/api/pomodoro?date=${today}`);
-      if (response.ok) {
-        const data = await response.json();
+        logDebug("ローカルストレージからロードしたデータ:", data);
         setTodayStudyTime(data.todayStudyTime || 0);
         setTodayPomodoros(data.todayPomodoros || 0);
       } else {
-        console.error('Failed to load study data');
+        logDebug("ローカルストレージにデータがありません。初期値を設定します。");
+        setTodayStudyTime(0);
+        setTodayPomodoros(0);
       }
-      */
-    } catch (error) {
-      console.error("Error loading study data:", error);
+    } catch (localStorageError) {
+      logDebug("ローカルストレージ読み込みエラー:", localStorageError);
+      throw localStorageError;
     }
   };
 
-  // APIにデータを保存する関数（ローカルストレージ版）
-  const saveStudyData = async () => {
-    if (typeof window === "undefined") return; // サーバーサイドでは実行しない
+  // ローカルストレージにデータを保存する関数
+  const saveToLocalStorage = async () => {
+    logDebug("ローカルストレージにデータを保存中");
+    const today = new Date().toISOString().split("T")[0];
+    const storageKey = `studyData_${today}`;
 
     try {
-      const today = new Date().toISOString().split("T")[0];
-      const storageKey = `studyData_${today}`;
       const data = {
         date: today,
         todayStudyTime,
@@ -105,42 +221,162 @@ export default function Timer() {
         lastUpdated: new Date().toISOString(),
       };
 
-      // ローカルストレージにデータを保存
       localStorage.setItem(storageKey, JSON.stringify(data));
-      console.log("Saved study data to local storage:", data);
+      logDebug("ローカルストレージにデータを保存しました:", data);
+    } catch (localStorageError) {
+      logDebug("ローカルストレージ保存エラー:", localStorageError);
+      throw localStorageError;
+    }
+  };
 
-      // API呼び出しは後で実装
-      /*
-      await fetch('/api/pomodoro', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          date: today,
-          todayStudyTime,
-          todayPomodoros,
-        }),
-      });
-      */
+  // Supabaseからデータをロードする関数
+  const loadFromSupabase = async () => {
+    logDebug("Supabaseからデータをロード中");
+    const today = new Date().toISOString().split("T")[0];
+
+    try {
+      // ユーザーIDの確認
+      logDebug("ロード対象ユーザーID:", user.id);
+
+      // timerServiceを使ってデータ取得
+      const data = await timerService.getUserTimerData(user.id, today);
+
+      if (data) {
+        logDebug("Supabaseからロードしたデータ:", data);
+        setTodayStudyTime(data.study_time_seconds || 0);
+        setTodayPomodoros(data.pomodoro_count || 0);
+      } else {
+        logDebug("本日のデータは存在しません。初期値を設定します。");
+        setTodayStudyTime(0);
+        setTodayPomodoros(0);
+      }
+    } catch (supabaseError) {
+      logDebug("Supabeデータロードエラー:", supabaseError);
+      throw supabaseError;
+    }
+  };
+
+  // Supabaseにデータを保存する関数
+  const saveToSupabase = async () => {
+    logDebug("Supabaseにデータを保存中");
+    const today = new Date().toISOString().split("T")[0];
+
+    try {
+      // ユーザーIDの確認
+      logDebug("保存対象ユーザーID:", user.id);
+
+      // timerServiceを使ってデータ保存
+      await timerService.saveTimerData(user.id, today, todayStudyTime, todayPomodoros);
+      logDebug("Supabaseにデータを保存しました");
+
+      // テーブル内容を更新（デバッグ中の場合）
+      if (debug) {
+        showTableContent();
+      }
+    } catch (supabaseError) {
+      logDebug("Supabaseデータ保存エラー:", supabaseError);
+      throw supabaseError;
+    }
+  };
+
+  // データをロードする関数
+  const loadStudyData = async () => {
+    if (!isSignedIn || !user) {
+      logDebug("データロード: ユーザーがログインしていません");
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      logDebug(`データロード開始 (モード: ${useLocalStorage ? "ローカルストレージ" : "Supabase"})`);
+
+      if (useLocalStorage) {
+        // ローカルストレージからロード
+        await loadFromLocalStorage();
+      } else {
+        try {
+          // Supabaseからロード
+          await loadFromSupabase();
+        } catch (supabaseError) {
+          logDebug("Supabase呼び出しエラー:", supabaseError);
+          logDebug("フォールバック: ローカルストレージからデータをロードします");
+          setUseLocalStorage(true);
+          await loadFromLocalStorage();
+        }
+      }
     } catch (error) {
-      console.error("Error saving study data:", error);
+      logDebug("データロード処理エラー:", error);
+      setError(`データロード処理エラー: ${error.message || "不明なエラー"}`);
+      // 最終手段: 初期値を設定
+      setTodayStudyTime(0);
+      setTodayPomodoros(0);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // データを保存する関数
+  const saveStudyData = async () => {
+    if (!isSignedIn || !user) {
+      logDebug("データ保存: ユーザーがログインしていません");
+      return;
+    }
+    if (todayStudyTime <= 0 && todayPomodoros <= 0) {
+      logDebug("データ保存: 保存するデータがありません");
+      return; // 保存するデータがない場合はスキップ
+    }
+
+    try {
+      logDebug(`データ保存開始 (モード: ${useLocalStorage ? "ローカルストレージ" : "Supabase"})`);
+
+      if (useLocalStorage) {
+        // ローカルストレージに保存
+        await saveToLocalStorage();
+      } else {
+        try {
+          // Supabaseに保存
+          await saveToSupabase();
+        } catch (supabaseError) {
+          logDebug("Supabeデータ保存エラー:", supabaseError);
+          logDebug("フォールバック: ローカルストレージにデータを保存します");
+          setUseLocalStorage(true);
+          await saveToLocalStorage();
+        }
+      }
+    } catch (error) {
+      logDebug("データ保存処理エラー:", error);
+      setError(`データ保存処理エラー: ${error.message || "不明なエラー"}`);
     }
   };
 
   // 初期化時にデータをロード
   useEffect(() => {
-    loadStudyData();
+    if (isSignedIn && user) {
+      loadStudyData();
+    }
+  }, [isSignedIn, user, useLocalStorage]);
+
+  // 現在時刻を更新
+  useEffect(() => {
+    clockRef.current = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+
+    return () => clearInterval(clockRef.current);
   }, []);
 
   // 定期的にデータを保存（1分ごと）
   useEffect(() => {
+    if (!isSignedIn || !user) return;
+
     const saveInterval = setInterval(() => {
       saveStudyData();
     }, 60000); // 1分ごとに保存
 
     return () => clearInterval(saveInterval);
-  }, [todayStudyTime, todayPomodoros]);
+  }, [isSignedIn, user, todayStudyTime, todayPomodoros, useLocalStorage]);
 
   // ページを離れる前に保存
   useEffect(() => {
@@ -154,7 +390,7 @@ export default function Timer() {
       window.removeEventListener("beforeunload", handleBeforeUnload);
       saveStudyData(); // コンポーネントのアンマウント時にも保存
     };
-  }, [todayStudyTime, todayPomodoros]);
+  }, [isSignedIn, user, todayStudyTime, todayPomodoros, useLocalStorage]);
 
   // モード変更時にタイマーをリセット
   useEffect(() => {
@@ -170,7 +406,7 @@ export default function Timer() {
             clearInterval(timerRef.current);
             // 音声通知を再生
             if (alarmSound.current) {
-              alarmSound.current.play().catch((e) => console.log("音声再生エラー:", e));
+              alarmSound.current.play().catch((e) => logDebug("音声再生エラー:", e));
             }
 
             // タイマー終了時の処理
@@ -178,9 +414,6 @@ export default function Timer() {
               // カウンターの更新 - ポモドーロ完了数のみここで更新
               const newCount = completedPomodoros + 1;
               setCompletedPomodoros(newCount);
-
-              // 今日のポモドーロカウンターは別のuseEffectで更新するので、ここでは削除
-              // setTodayPomodoros(prev => prev + 1);
 
               // Pomodoro完了数に応じて次のモードを決定
               if (newCount % pomodoroGoal === 0) {
@@ -220,12 +453,12 @@ export default function Timer() {
     // completedPomodorosが変化したとき、今日のポモドーロカウンターを更新
     // 長休憩後のリセットでは増加しないように条件を追加
     if (completedPomodoros > 0 && completedPomodoros % pomodoroGoal !== 0) {
-      setTodayPomodoros(Math.ceil(completedPomodoros));
+      setTodayPomodoros((prev) => Math.max(prev, Math.ceil(completedPomodoros)));
     } else if (completedPomodoros === 0) {
       // カウンターがリセットされた場合は何もしない
     } else {
       // 長休憩に入るタイミング
-      setTodayPomodoros(Math.ceil(completedPomodoros / pomodoroGoal) * pomodoroGoal);
+      setTodayPomodoros((prev) => Math.max(prev, Math.ceil(completedPomodoros / pomodoroGoal) * pomodoroGoal));
     }
   }, [completedPomodoros, pomodoroGoal]);
 
@@ -317,9 +550,81 @@ export default function Timer() {
     return null;
   };
 
+  // 日付をフォーマット
+  const formatDate = (dateStr) => {
+    return new Date(dateStr).toLocaleDateString("ja-JP");
+  };
+
   return (
     <div className="max-w-6xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">学習タイマー</h1>
+
+      {/* Supabase接続テスト表示 */}
+      <div className="mb-4 p-4 bg-gray-100 rounded-lg">
+        <div className="flex justify-between items-center mb-2">
+          <h3 className="font-medium">Supabase接続テスト</h3>
+          <div className="flex space-x-2">
+            <button onClick={toggleDebugMode} className={`px-3 py-1 ${debug ? "bg-purple-500" : "bg-gray-500"} text-white rounded text-sm`}>
+              {debug ? "デバッグ表示中" : "デバッグ"}
+            </button>
+            <button onClick={toggleStorageMode} className={`px-3 py-1 ${forceLocalStorage ? "bg-yellow-500" : "bg-blue-500"} text-white rounded text-sm`}>
+              {forceLocalStorage ? "ローカルストレージ使用中" : "Supabase優先"}
+            </button>
+            <button onClick={runConnectionTest} className="px-3 py-1 bg-blue-500 text-white rounded text-sm">
+              再テスト
+            </button>
+          </div>
+        </div>
+
+        {connectionTestResult ? (
+          connectionTestResult.testing ? (
+            <p>テスト中...</p>
+          ) : connectionTestResult.success ? (
+            <div className="text-green-600">
+              <p>接続成功！データベースとの通信が正常です。</p>
+              <p className="text-xs mt-1">データストレージ: {useLocalStorage ? "ローカルストレージ" : "Supabase"}</p>
+            </div>
+          ) : (
+            <div className="text-red-600">
+              <p>接続エラー: {connectionTestResult.error?.message || "不明なエラー"}</p>
+              <p className="text-sm mt-1">ローカルストレージを使用します</p>
+            </div>
+          )
+        ) : (
+          <p>テストが実行されていません</p>
+        )}
+
+        {/* 環境変数ステータス */}
+        <div className="mt-2 text-xs">
+          <p>環境変数ステータス:</p>
+          <p>NEXT_PUBLIC_SUPABASE_URL: {supabaseEnv.url}</p>
+          <p>NEXT_PUBLIC_SUPABASE_ANON_KEY: {supabaseEnv.key}</p>
+          {isSignedIn && user && <p>ユーザーID: {user.id}</p>}
+        </div>
+
+        {/* デバッグボタン */}
+        {connectionTestResult?.success && (
+          <div className="mt-2 flex space-x-2">
+            <button onClick={createTestData} className="px-3 py-1 bg-green-500 text-white rounded text-sm">
+              テストデータ作成
+            </button>
+            <button onClick={showTableContent} className="px-3 py-1 bg-blue-500 text-white rounded text-sm">
+              テーブル内容確認
+            </button>
+            <button onClick={getAllData} className="px-3 py-1 bg-blue-500 text-white rounded text-sm">
+              全データ取得
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* エラー表示 */}
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6">
+          <strong className="font-bold">エラー: </strong>
+          <span className="block sm:inline">{error}</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* ポモドーロタイマー */}
@@ -399,17 +704,25 @@ export default function Timer() {
               <div className="text-4xl font-bold text-indigo-700">{formatCurrentTime(currentTime)}</div>
             </div>
 
-            {/* 学習時間 */}
-            <div className="bg-indigo-100 p-6 rounded-lg mb-4">
-              <div className="text-sm text-indigo-400 mb-1">今日の学習時間</div>
-              <div className="text-4xl font-bold text-indigo-700">{formatLongTime(todayStudyTime)}</div>
-            </div>
+            {isLoading ? (
+              <div className="bg-indigo-100 p-6 rounded-lg mb-4 animate-pulse">
+                <div className="text-sm text-indigo-400 mb-1">データ読み込み中...</div>
+              </div>
+            ) : (
+              <>
+                {/* 学習時間 */}
+                <div className="bg-indigo-100 p-6 rounded-lg mb-4">
+                  <div className="text-sm text-indigo-400 mb-1">今日の学習時間</div>
+                  <div className="text-4xl font-bold text-indigo-700">{formatLongTime(todayStudyTime)}</div>
+                </div>
 
-            {/* ポモドーロ回数 */}
-            <div className="bg-gray-100 p-6 rounded-lg">
-              <div className="text-sm text-gray-400 mb-1">今日のポモドーロ</div>
-              <div className="text-4xl font-bold text-gray-700">{todayPomodoros}回</div>
-            </div>
+                {/* ポモドーロ回数 */}
+                <div className="bg-gray-100 p-6 rounded-lg">
+                  <div className="text-sm text-gray-400 mb-1">今日のポモドーロ</div>
+                  <div className="text-4xl font-bold text-gray-700">{todayPomodoros}回</div>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="border-t mt-6 pt-4">
@@ -421,6 +734,91 @@ export default function Timer() {
           </div>
         </div>
       </div>
+
+      {/* 通知 */}
+      <div className="mt-6 p-4 bg-yellow-100 border border-yellow-400 text-yellow-800 rounded">
+        <h3 className="font-medium mb-1">データストレージ: {useLocalStorage ? "ローカルストレージ" : "Supabase"}</h3>
+        <p className="text-sm">{useLocalStorage ? "現在、データはブラウザのローカルストレージに保存されています。上部の「Supabase優先」ボタンを押すと、接続に成功した場合はデータベースに保存されます。" : "現在、データはSupabaseデータベースに保存されています。上部の切替ボタンでローカルストレージに切り替えることができます。"}</p>
+      </div>
+
+      {/* テーブル内容 */}
+      {debug && tableContent.length > 0 && (
+        <div className="mt-6 p-4 bg-white rounded-lg shadow overflow-x-auto">
+          <h3 className="font-medium mb-3">テーブル内容</h3>
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">ユーザーID</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">日付</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">学習時間(秒)</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">ポモドーロ数</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">作成日時</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">更新日時</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200 text-xs">
+              {tableContent.map((row) => (
+                <tr key={row.id} className={row.user_id === user?.id ? "bg-green-50" : ""}>
+                  <td className="px-3 py-2 whitespace-nowrap">{row.id.substring(0, 8)}...</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{row.user_id.substring(0, 8)}...</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{formatDate(row.date)}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    {row.study_time_seconds} ({formatTime(row.study_time_seconds)})
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">{row.pomodoro_count}回</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{new Date(row.created_at).toLocaleString()}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{new Date(row.updated_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* デバッグログ */}
+      {debug && (
+        <div className="mt-6 bg-gray-800 text-white p-4 rounded-lg">
+          <h3 className="font-medium mb-3 text-gray-200">デバッグログ</h3>
+          <div className="overflow-auto max-h-64 text-xs font-mono">
+            {debugOutput.length === 0 ? (
+              <p className="text-gray-400">ログはありません</p>
+            ) : (
+              <ul className="space-y-1">
+                {debugOutput.map((log, index) => (
+                  <li key={index} className="border-b border-gray-700 pb-1">
+                    <span className="text-gray-400">[{log.time}]</span> {log.message}
+                    {log.data && <pre className="ml-5 text-green-300 mt-1 overflow-x-auto">{typeof log.data === "object" ? JSON.stringify(log.data, null, 2) : log.data}</pre>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 開発情報 */}
+      <div className="mt-6 p-4 bg-gray-100 rounded-lg text-sm">
+        <h3 className="font-medium mb-2">Supabase設定手順</h3>
+        <ol className="list-decimal list-inside space-y-1">
+          <li>Supabaseプロジェクトを作成する</li>
+          <li>`.env.local`ファイルにURLとAnonキーを設定する</li>
+          <li>Supabaseの管理画面でテーブルを作成する</li>
+          <li>Row Level Security (RLS)ポリシーを設定する</li>
+        </ol>
+        <p className="mt-2">現在の環境変数:</p>
+        <pre className="bg-gray-700 text-white p-2 rounded mt-1 overflow-auto">
+          NEXT_PUBLIC_SUPABASE_URL: {process.env.NEXT_PUBLIC_SUPABASE_URL || "未設定"}
+          <br />
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: {process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "[設定済み - セキュリティのため非表示]" : "未設定"}
+        </pre>
+      </div>
+
+      {/* 音声通知用のエレメント */}
+      <audio ref={alarmSound} preload="auto">
+        <source src="/sounds/alarm.mp3" type="audio/mpeg" />
+        Your browser does not support the audio element.
+      </audio>
     </div>
   );
 }

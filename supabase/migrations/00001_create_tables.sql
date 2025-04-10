@@ -32,25 +32,3 @@ CREATE POLICY "全てのユーザーにタイマーデータ操作を許可"
   USING (true)
   WITH CHECK (true);
 
--- 注意: これは開発目的のみのポリシーです。本番環境では以下のようなより制限的なポリシーを使用してください
-/*
--- 認証済みユーザーが自分のデータのみ読み取り可能
-CREATE POLICY "ユーザーは自分のタイマーデータのみ読み取り可能" 
-  ON timer_data FOR SELECT 
-  USING (auth.uid()::text = user_id);
-
--- 認証済みユーザーが自分のデータのみ追加可能
-CREATE POLICY "ユーザーは自分のタイマーデータのみ追加可能" 
-  ON timer_data FOR INSERT 
-  WITH CHECK (auth.uid()::text = user_id);
-
--- 認証済みユーザーが自分のデータのみ更新可能
-CREATE POLICY "ユーザーは自分のタイマーデータのみ更新可能" 
-  ON timer_data FOR UPDATE 
-  USING (auth.uid()::text = user_id);
-
--- 認証済みユーザーが自分のデータのみ削除可能
-CREATE POLICY "ユーザーは自分のタイマーデータのみ削除可能" 
-  ON timer_data FOR DELETE 
-  USING (auth.uid()::text = user_id);
-*/

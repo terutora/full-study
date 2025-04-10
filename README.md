@@ -2,7 +2,7 @@
 
 効率的に勉強の進捗を追跡し、学習習慣を向上させるためのWebアプリケーションです。
 
-![StudyTracker](https://api.placeholder.com/400/320)
+![StudyTracker]([https://portfolio-project-five-sandy.vercel.app/images/fullstudy.png])
 
 ## 機能
 

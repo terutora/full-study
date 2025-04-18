@@ -3,12 +3,14 @@
 
 import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
+import { noteService } from "@/lib/supabase";
 
 export default function Notes() {
   // メモの状態
   const [notes, setNotes] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [useLocalStorage, setUseLocalStorage] = useState(false); // フォールバック用
 
   // 新規メモの状態
   const [newNote, setNewNote] = useState({
@@ -26,14 +28,12 @@ export default function Notes() {
   // 認証情報
   const { isSignedIn, user } = useUser();
 
-  // ローカルストレージからメモをロードする関数
-  const loadNotes = () => {
+  // ローカルストレージからメモをロードする関数（フォールバック用）
+  const loadFromLocalStorage = () => {
     if (typeof window === "undefined") return;
 
-    setIsLoading(true);
-    setError(null);
-
     try {
+      console.log("ローカルストレージからメモをロード中");
       const userId = user?.id || "guest";
       const storageKey = `notes_${userId}`;
       const storedNotes = localStorage.getItem(storageKey);
@@ -43,25 +43,73 @@ export default function Notes() {
       } else {
         setNotes([]);
       }
+      return true;
     } catch (err) {
-      console.error("Error loading notes from localStorage:", err);
-      setError("メモの読み込み中にエラーが発生しました");
-    } finally {
-      setIsLoading(false);
+      console.error("ローカルストレージからのメモ読み込みエラー:", err);
+      return false;
     }
   };
 
-  // ローカルストレージにメモを保存する関数
-  const saveNotes = (notesToSave) => {
+  // ローカルストレージにメモを保存する関数（フォールバック用）
+  const saveToLocalStorage = (notesToSave) => {
     if (typeof window === "undefined") return;
 
     try {
       const userId = user?.id || "guest";
       const storageKey = `notes_${userId}`;
       localStorage.setItem(storageKey, JSON.stringify(notesToSave));
+      return true;
     } catch (err) {
-      console.error("Error saving notes to localStorage:", err);
-      setError("メモの保存中にエラーが発生しました");
+      console.error("ローカルストレージへのメモ保存エラー:", err);
+      return false;
+    }
+  };
+
+  // Supabaseからメモをロードする関数
+  const loadFromSupabase = async () => {
+    try {
+      console.log("Supabaseからメモをロード中");
+      const data = await noteService.getUserNotes(user.id);
+      setNotes(data);
+      return true;
+    } catch (err) {
+      console.error("Supabaseからのメモ読み込みエラー:", err);
+      return false;
+    }
+  };
+
+  // メモをロードする関数
+  const loadNotes = async () => {
+    if (!isSignedIn || !user) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      let success = false;
+
+      if (!useLocalStorage) {
+        // まずSupabaseからのロードを試みる
+        success = await loadFromSupabase();
+        if (!success) {
+          console.log("Supabase接続に失敗、ローカルストレージにフォールバック");
+          setUseLocalStorage(true);
+          success = loadFromLocalStorage();
+        }
+      } else {
+        // ローカルストレージからロード
+        success = loadFromLocalStorage();
+      }
+
+      if (!success) {
+        throw new Error("メモのロードに失敗しました");
+      }
+    } catch (err) {
+      console.error("メモロードエラー:", err);
+      setError("メモの読み込み中にエラーが発生しました");
+      setNotes([]); // 最低限空の配列を設定
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -72,32 +120,48 @@ export default function Notes() {
     }
   }, [isSignedIn, user?.id]);
 
-  // メモが変更されたらローカルストレージに保存
+  // データソースが変更された場合も再ロード
   useEffect(() => {
-    if (notes.length > 0 || isLoading === false) {
-      saveNotes(notes);
+    if (isSignedIn) {
+      loadNotes();
     }
-  }, [notes]);
+  }, [useLocalStorage]);
 
   // メモ追加処理
-  const handleAddNote = (e) => {
+  const handleAddNote = async (e) => {
     e.preventDefault();
 
     try {
-      const newNoteWithId = {
-        id: Date.now().toString(),
-        title: newNote.title,
-        content: newNote.content,
-        tags: newNote.tags
-          .split(",")
-          .map((tag) => tag.trim())
-          .filter((tag) => tag),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+      const tags = newNote.tags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter((tag) => tag);
 
-      const updatedNotes = [newNoteWithId, ...notes];
-      setNotes(updatedNotes);
+      if (useLocalStorage) {
+        // ローカルストレージに保存
+        const newNoteWithId = {
+          id: Date.now().toString(),
+          title: newNote.title,
+          content: newNote.content,
+          tags: tags,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        const updatedNotes = [newNoteWithId, ...notes];
+        setNotes(updatedNotes);
+        saveToLocalStorage(updatedNotes);
+      } else {
+        // Supabaseに保存
+        const noteData = {
+          title: newNote.title,
+          content: newNote.content,
+          tags: tags,
+        };
+
+        const createdNote = await noteService.createNote(user.id, noteData);
+        setNotes([createdNote, ...notes]);
+      }
 
       // フォームをリセット
       setNewNote({
@@ -107,60 +171,91 @@ export default function Notes() {
       });
       setShowAddForm(false);
     } catch (err) {
-      console.error("Error adding note:", err);
+      console.error("メモ追加エラー:", err);
       setError("メモの追加中にエラーが発生しました");
     }
   };
 
   // メモ更新処理
-  const handleUpdateNote = (e) => {
+  const handleUpdateNote = async (e) => {
     e.preventDefault();
 
     if (!selectedNote) return;
 
     try {
-      const updatedNote = {
-        ...selectedNote,
-        title: newNote.title,
-        content: newNote.content,
-        tags: newNote.tags
-          .split(",")
-          .map((tag) => tag.trim())
-          .filter((tag) => tag),
-        updatedAt: new Date().toISOString(),
-      };
+      const tags = newNote.tags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter((tag) => tag);
 
-      // メモリストを更新
-      const updatedNotes = notes.map((note) => (note.id === updatedNote.id ? updatedNote : note));
+      if (useLocalStorage) {
+        // ローカルストレージで更新
+        const updatedNote = {
+          ...selectedNote,
+          title: newNote.title,
+          content: newNote.content,
+          tags: tags,
+          updatedAt: new Date().toISOString(),
+        };
 
-      setNotes(updatedNotes);
+        // メモリストを更新
+        const updatedNotes = notes.map((note) => (note.id === updatedNote.id ? updatedNote : note));
+        setNotes(updatedNotes);
+        saveToLocalStorage(updatedNotes);
+
+        // 選択中のメモも更新
+        setSelectedNote(updatedNote);
+      } else {
+        // Supabaseで更新
+        const noteData = {
+          title: newNote.title,
+          content: newNote.content,
+          tags: tags,
+        };
+
+        const updatedNote = await noteService.updateNote(user.id, selectedNote.id, noteData);
+
+        // メモリストを更新
+        const updatedNotes = notes.map((note) => (note.id === updatedNote.id ? updatedNote : note));
+        setNotes(updatedNotes);
+
+        // 選択中のメモも更新
+        setSelectedNote(updatedNote);
+      }
 
       // 編集モードを終了
-      setSelectedNote(updatedNote);
       setEditMode(false);
     } catch (err) {
-      console.error("Error updating note:", err);
+      console.error("メモ更新エラー:", err);
       setError("メモの更新中にエラーが発生しました");
     }
   };
 
   // メモ削除処理
-  const handleDeleteNote = (noteId) => {
+  const handleDeleteNote = async (noteId) => {
     if (!confirm("このメモを削除してもよろしいですか？")) {
       return;
     }
 
     try {
-      // 削除したメモをリストから除外
-      const updatedNotes = notes.filter((note) => note.id !== noteId);
-      setNotes(updatedNotes);
+      if (useLocalStorage) {
+        // ローカルストレージから削除
+        const updatedNotes = notes.filter((note) => note.id !== noteId);
+        setNotes(updatedNotes);
+        saveToLocalStorage(updatedNotes);
+      } else {
+        // Supabaseから削除
+        await noteService.deleteNote(user.id, noteId);
+        const updatedNotes = notes.filter((note) => note.id !== noteId);
+        setNotes(updatedNotes);
+      }
 
       // 削除したメモが選択中だった場合、選択解除
       if (selectedNote && selectedNote.id === noteId) {
         setSelectedNote(null);
       }
     } catch (err) {
-      console.error("Error deleting note:", err);
+      console.error("メモ削除エラー:", err);
       setError("メモの削除中にエラーが発生しました");
     }
   };
@@ -340,7 +435,7 @@ export default function Notes() {
                     <div className="p-4">
                       <div className="flex justify-between">
                         <h3 className="text-lg font-medium text-gray-900">{note.title}</h3>
-                        <span className="text-xs text-gray-500">{formatDate(note.updatedAt)}</span>
+                        <span className="text-xs text-gray-500">{formatDate(note.updatedAt || note.updated_at)}</span>
                       </div>
                       <div className="mt-1 text-sm text-gray-600 line-clamp-2">{note.content.split("\n")[0].replace(/^#+ /, "")}</div>
                       <div className="mt-2 flex flex-wrap gap-1">
@@ -441,8 +536,8 @@ export default function Notes() {
               <div className="flex justify-between items-start mb-4">
                 <h2 className="text-2xl font-bold">{selectedNote.title}</h2>
                 <div className="text-sm text-gray-500">
-                  <div>作成: {formatDate(selectedNote.createdAt)}</div>
-                  <div>更新: {formatDate(selectedNote.updatedAt)}</div>
+                  <div>作成: {formatDate(selectedNote.createdAt || selectedNote.created_at)}</div>
+                  <div>更新: {formatDate(selectedNote.updatedAt || selectedNote.updated_at)}</div>
                 </div>
               </div>
 

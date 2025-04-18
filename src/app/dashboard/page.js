@@ -4,6 +4,7 @@
 import { useUser } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { analyticsService, taskService, noteService } from "@/lib/supabase";
 
 export default function Dashboard() {
   const { isSignedIn, user, isLoaded } = useUser();
@@ -20,14 +21,15 @@ export default function Dashboard() {
 
   // 読み込み状態
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [useLocalStorage, setUseLocalStorage] = useState(false); // フォールバック用
 
-  // ローカルストレージからデータを読み込む
-  useEffect(() => {
-    if (typeof window === "undefined" || !isSignedIn) return;
-
-    setIsLoading(true);
+  // ローカルストレージからデータをロードする関数（フォールバック用）
+  const loadFromLocalStorage = async () => {
+    if (typeof window === "undefined") return false;
 
     try {
+      console.log("ローカルストレージからデータをロード中");
       // 今日の日付
       const today = new Date().toISOString().split("T")[0];
 
@@ -42,8 +44,8 @@ export default function Dashboard() {
         const data = JSON.parse(storedData);
         setStudyData((prev) => ({
           ...prev,
-          todayStudyTime: data.todayStudyTime || 0,
-          todayPomodoros: data.todayPomodoros || 0,
+          todayStudyTime: data.todayStudyTime || data.study_time_seconds || 0,
+          todayPomodoros: data.todayPomodoros || data.pomodoro_count || 0,
         }));
       }
 
@@ -71,7 +73,7 @@ export default function Dashboard() {
         const allNotes = JSON.parse(storedNotes);
 
         // 直近で更新されたメモ
-        const sortedNotes = [...allNotes].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+        const sortedNotes = [...allNotes].sort((a, b) => new Date(b.updatedAt || b.updated_at) - new Date(a.updatedAt || a.updated_at));
         setRecentNotes(sortedNotes.slice(0, 3));
       }
 
@@ -80,12 +82,110 @@ export default function Dashboard() {
         ...prev,
         streak: 5, // 例として5日間としています
       }));
-    } catch (error) {
-      console.error("Error loading dashboard data:", error);
+
+      return true;
+    } catch (err) {
+      console.error("ローカルストレージからのデータ読み込みエラー:", err);
+      return false;
+    }
+  };
+
+  // Supabaseからデータを読み込む関数
+  const loadFromSupabase = async () => {
+    try {
+      console.log("Supabaseからデータをロード中");
+      const today = new Date().toISOString().split("T")[0];
+
+      // 1. 今日の学習データを取得
+      const timerData = await analyticsService.getStudyTimeData(user.id, today, today);
+
+      if (timerData && timerData.length > 0) {
+        setStudyData((prev) => ({
+          ...prev,
+          todayStudyTime: timerData[0].study_time_seconds || 0,
+          todayPomodoros: timerData[0].pomodoro_count || 0,
+        }));
+      }
+
+      // 2. 学習ストリークを取得
+      const streak = await analyticsService.getStudyStreak(user.id);
+      setStudyData((prev) => ({
+        ...prev,
+        streak: streak,
+      }));
+
+      // 3. 最近のタスクを取得
+      const allTasks = await taskService.getUserTasks(user.id);
+
+      // 直近で更新されたタスク
+      const sortedTasks = [...allTasks].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+      setRecentTasks(sortedTasks.slice(0, 5));
+
+      // 期限が近いタスク
+      const upcomingTasksList = allTasks.filter((task) => !task.completed && task.due).sort((a, b) => new Date(a.due) - new Date(b.due));
+      setUpcomingTasks(upcomingTasksList.slice(0, 5));
+
+      // 4. 最近のメモを取得
+      const allNotes = await noteService.getUserNotes(user.id);
+
+      // 直近で更新されたメモ
+      const sortedNotes = [...allNotes].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+      setRecentNotes(sortedNotes.slice(0, 3));
+
+      return true;
+    } catch (err) {
+      console.error("Supabaseからのデータ読み込みエラー:", err);
+      return false;
+    }
+  };
+
+  // ダッシュボードデータを読み込む関数
+  const loadDashboardData = async () => {
+    if (!isSignedIn || !user) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      let success = false;
+
+      if (!useLocalStorage) {
+        // まずSupabaseからのロードを試みる
+        success = await loadFromSupabase();
+        if (!success) {
+          console.log("Supabase接続に失敗、ローカルストレージにフォールバック");
+          setUseLocalStorage(true);
+          success = await loadFromLocalStorage();
+        }
+      } else {
+        // ローカルストレージからロード
+        success = await loadFromLocalStorage();
+      }
+
+      if (!success) {
+        throw new Error("データのロードに失敗しました");
+      }
+    } catch (err) {
+      console.error("ダッシュボードデータロードエラー:", err);
+      setError("データの読み込み中にエラーが発生しました");
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // ユーザーが認証されたらデータをロード
+  useEffect(() => {
+    if (isSignedIn) {
+      loadDashboardData();
+    }
   }, [isSignedIn, user?.id]);
+
+  // データソースが変更された場合も再ロード
+  useEffect(() => {
+    if (isSignedIn) {
+      loadDashboardData();
+    }
+  }, [useLocalStorage]);
 
   // 時間のフォーマット（秒→hh:mm:ss）
   const formatTime = (seconds) => {
@@ -223,8 +323,8 @@ export default function Dashboard() {
                       <h3 className="font-medium">{note.title}</h3>
                       <p className="text-sm text-gray-600 truncate mt-1">{note.content.split("\n")[0].replace(/^#+ /, "")}</p>
                       <div className="flex items-center mt-1">
-                        <span className="text-xs text-gray-500">{getRelativeTimeString(note.updatedAt)}に更新</span>
-                        {note.tags.length > 0 && (
+                        <span className="text-xs text-gray-500">{getRelativeTimeString(note.updatedAt || note.updated_at)}に更新</span>
+                        {note.tags && note.tags.length > 0 && (
                           <div className="flex flex-wrap gap-1 ml-2">
                             {note.tags.slice(0, 2).map((tag, index) => (
                               <span key={index} className="px-2 py-0.5 text-xs rounded-full bg-indigo-100 text-indigo-800">
@@ -304,6 +404,22 @@ export default function Dashboard() {
                 <h3 className="font-medium text-lg mb-1">メモ作成</h3>
                 <p className="text-sm text-gray-600">学んだことをマークダウンで記録</p>
               </Link>
+            </div>
+          </div>
+
+          {/* データソース情報 */}
+          <div className="bg-white p-6 rounded-lg shadow mt-8">
+            <h2 className="text-lg font-medium mb-4">データソース情報</h2>
+            <div className="flex items-center">
+              <div className={`w-3 h-3 rounded-full mr-2 ${useLocalStorage ? "bg-yellow-500" : "bg-green-500"}`}></div>
+              <p>
+                現在のデータソース: <strong>{useLocalStorage ? "ローカルストレージ" : "Supabase"}</strong>
+                {useLocalStorage && (
+                  <button onClick={() => setUseLocalStorage(false)} className="ml-4 text-indigo-600 hover:text-indigo-800 text-sm underline">
+                    Supabaseに再接続を試みる
+                  </button>
+                )}
+              </p>
             </div>
           </div>
         </>

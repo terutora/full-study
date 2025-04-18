@@ -3,12 +3,14 @@
 
 import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
+import { taskService } from "@/lib/supabase";
 
 export default function Tasks() {
   // タスクの状態
   const [tasks, setTasks] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [useLocalStorage, setUseLocalStorage] = useState(false); // フォールバック用
 
   // 新規タスクの状態
   const [newTask, setNewTask] = useState({
@@ -31,14 +33,12 @@ export default function Tasks() {
   // 認証情報
   const { isSignedIn, user } = useUser();
 
-  // ローカルストレージからタスクをロードする関数
-  const loadTasks = () => {
+  // ローカルストレージからタスクをロードする関数（フォールバック用）
+  const loadFromLocalStorage = () => {
     if (typeof window === "undefined") return;
 
-    setIsLoading(true);
-    setError(null);
-
     try {
+      console.log("ローカルストレージからタスクをロード中");
       const userId = user?.id || "guest";
       const storageKey = `tasks_${userId}`;
       const storedTasks = localStorage.getItem(storageKey);
@@ -48,25 +48,73 @@ export default function Tasks() {
       } else {
         setTasks([]);
       }
+      return true;
     } catch (err) {
-      console.error("Error loading tasks from localStorage:", err);
-      setError("タスクの読み込み中にエラーが発生しました");
-    } finally {
-      setIsLoading(false);
+      console.error("ローカルストレージからのタスク読み込みエラー:", err);
+      return false;
     }
   };
 
-  // ローカルストレージにタスクを保存する関数
-  const saveTasks = (tasksToSave) => {
+  // ローカルストレージにタスクを保存する関数（フォールバック用）
+  const saveToLocalStorage = (tasksToSave) => {
     if (typeof window === "undefined") return;
 
     try {
       const userId = user?.id || "guest";
       const storageKey = `tasks_${userId}`;
       localStorage.setItem(storageKey, JSON.stringify(tasksToSave));
+      return true;
     } catch (err) {
-      console.error("Error saving tasks to localStorage:", err);
-      setError("タスクの保存中にエラーが発生しました");
+      console.error("ローカルストレージへのタスク保存エラー:", err);
+      return false;
+    }
+  };
+
+  // Supabaseからタスクをロードする関数
+  const loadFromSupabase = async () => {
+    try {
+      console.log("Supabaseからタスクをロード中");
+      const data = await taskService.getUserTasks(user.id);
+      setTasks(data);
+      return true;
+    } catch (err) {
+      console.error("Supabaseからのタスク読み込みエラー:", err);
+      return false;
+    }
+  };
+
+  // タスクをロードする関数
+  const loadTasks = async () => {
+    if (!isSignedIn || !user) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      let success = false;
+
+      if (!useLocalStorage) {
+        // まずSupabaseからのロードを試みる
+        success = await loadFromSupabase();
+        if (!success) {
+          console.log("Supabase接続に失敗、ローカルストレージにフォールバック");
+          setUseLocalStorage(true);
+          success = loadFromLocalStorage();
+        }
+      } else {
+        // ローカルストレージからロード
+        success = loadFromLocalStorage();
+      }
+
+      if (!success) {
+        throw new Error("タスクのロードに失敗しました");
+      }
+    } catch (err) {
+      console.error("タスクロードエラー:", err);
+      setError("タスクの読み込み中にエラーが発生しました");
+      setTasks([]); // 最低限空の配列を設定
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -77,28 +125,36 @@ export default function Tasks() {
     }
   }, [isSignedIn, user?.id]);
 
-  // タスクが変更されたらローカルストレージに保存
+  // データソースが変更された場合も再ロード
   useEffect(() => {
-    if (tasks.length > 0 || isLoading === false) {
-      saveTasks(tasks);
+    if (isSignedIn) {
+      loadTasks();
     }
-  }, [tasks]);
+  }, [useLocalStorage]);
 
   // タスク追加処理
-  const handleAddTask = (e) => {
+  const handleAddTask = async (e) => {
     e.preventDefault();
 
     try {
-      const newTaskWithId = {
-        id: Date.now().toString(), // 一意のID
-        ...newTask,
-        completed: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
+      if (useLocalStorage) {
+        // ローカルストレージに保存
+        const newTaskWithId = {
+          id: Date.now().toString(),
+          ...newTask,
+          completed: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
 
-      const updatedTasks = [...tasks, newTaskWithId];
-      setTasks(updatedTasks);
+        const updatedTasks = [...tasks, newTaskWithId];
+        setTasks(updatedTasks);
+        saveToLocalStorage(updatedTasks);
+      } else {
+        // Supabaseに保存
+        const createdTask = await taskService.createTask(user.id, newTask);
+        setTasks([...tasks, createdTask]);
+      }
 
       // フォームをリセット
       setNewTask({
@@ -111,27 +167,37 @@ export default function Tasks() {
       });
       setShowAddForm(false);
     } catch (err) {
-      console.error("Error adding task:", err);
+      console.error("タスク追加エラー:", err);
       setError("タスクの追加中にエラーが発生しました");
     }
   };
 
   // タスク更新処理
-  const handleUpdateTask = (e) => {
+  const handleUpdateTask = async (e) => {
     e.preventDefault();
 
     if (!editingTask) return;
 
     try {
-      const updatedTask = {
-        ...editingTask,
-        updated_at: new Date().toISOString(),
-      };
+      if (useLocalStorage) {
+        // ローカルストレージで更新
+        const updatedTask = {
+          ...editingTask,
+          updated_at: new Date().toISOString(),
+        };
 
-      // タスクリストを更新
-      const updatedTasks = tasks.map((task) => (task.id === updatedTask.id ? updatedTask : task));
+        // タスクリストを更新
+        const updatedTasks = tasks.map((task) => (task.id === updatedTask.id ? updatedTask : task));
+        setTasks(updatedTasks);
+        saveToLocalStorage(updatedTasks);
+      } else {
+        // Supabaseで更新
+        const updatedTask = await taskService.updateTask(user.id, editingTask.id, editingTask);
 
-      setTasks(updatedTasks);
+        // タスクリストを更新
+        const updatedTasks = tasks.map((task) => (task.id === updatedTask.id ? updatedTask : task));
+        setTasks(updatedTasks);
+      }
 
       // 編集モードを終了
       setEditingTask(null);

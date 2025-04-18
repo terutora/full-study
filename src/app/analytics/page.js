@@ -4,12 +4,14 @@
 import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
+import { analyticsService, taskService, noteService } from "@/lib/supabase";
 
 export default function Analytics() {
   // 期間選択の状態
   const [period, setPeriod] = useState("week");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [useLocalStorage, setUseLocalStorage] = useState(false); // フォールバック用
 
   // 分析データの状態
   const [studyData, setStudyData] = useState({
@@ -31,14 +33,12 @@ export default function Analytics() {
   // Clerkのユーザー情報
   const { isSignedIn, user } = useUser();
 
-  // ローカルストレージからデータを読み込む関数
-  const loadAnalyticsData = async () => {
-    if (typeof window === "undefined") return;
-
-    setIsLoading(true);
-    setError(null);
+  // ローカルストレージからデータを読み込む関数（フォールバック用）
+  const loadFromLocalStorage = async () => {
+    if (typeof window === "undefined") return false;
 
     try {
+      console.log("ローカルストレージから分析データをロード中");
       const userId = user?.id || "guest";
       const today = new Date();
 
@@ -58,16 +58,16 @@ export default function Analytics() {
 
         if (storedData) {
           const data = JSON.parse(storedData);
-          const hours = data.todayStudyTime / 3600; // 秒を時間に変換
+          const hours = (data.todayStudyTime || data.study_time_seconds || 0) / 3600; // 秒を時間に変換
           totalStudyTime += hours;
-          pomodoroCount += data.todayPomodoros || 0;
+          pomodoroCount += data.todayPomodoros || data.pomodoro_count || 0;
 
           dailyStudyData.push({
             date: dateStr,
             dateObj: date,
             time: parseFloat(hours.toFixed(1)),
             tasks: 0, // タスクデータは別途取得
-            pomodoros: data.todayPomodoros || 0,
+            pomodoros: data.todayPomodoros || data.pomodoro_count || 0,
           });
 
           // 連続学習日数の計算（単純化のため、データがある日を学習日とみなす）
@@ -144,151 +144,11 @@ export default function Analytics() {
       // 最も学習時間が長い時間帯を見つける
       const mostStudiedTime = timeOfDayData.reduce((best, current) => (current.hours > best.hours ? current : best)).time;
 
-      // 曜日の配列
-      const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
-
-      // 週間データの生成（常に日曜日から始まる7日間を表示）
-      const weeklyData = [];
-
-      // 現在の日付から直近の日曜日を見つける
-      const currentDay = today.getDay(); // 0が日曜日、6が土曜日
-      const sundayOffset = currentDay; // 日曜日までの日数（日曜日なら0）
-      const lastSunday = new Date(today);
-      lastSunday.setDate(today.getDate() - sundayOffset);
-
-      // 日曜日から7日間のデータを生成
-      for (let i = 0; i < 7; i++) {
-        const targetDate = new Date(lastSunday);
-        targetDate.setDate(lastSunday.getDate() + i);
-        const dateStr = targetDate.toISOString().split("T")[0];
-
-        // 該当日のデータを探す
-        const dayData = dailyStudyData.find((day) => day.date === dateStr);
-
-        weeklyData.push({
-          date: weekdays[i] + "曜日",
-          time: dayData ? dayData.time : 0,
-          tasks: dayData ? dayData.tasks : 0,
-          pomodoros: dayData ? dayData.pomodoros : 0,
-        });
-      }
-
-      // 月間データの生成（常に当月の週ごとに分けて表示）
-      const monthlyData = [];
-
-      // 現在の月の初日を取得
-      const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-
-      // 現在の月の週数を計算
-      const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-      const totalDaysInMonth = lastDayOfMonth.getDate();
-
-      // 各週の開始日と終了日を計算
-      for (let weekNumber = 0; weekNumber < 4; weekNumber++) {
-        // 各週の開始日（1日、8日、15日、22日）
-        const startDay = weekNumber * 7 + 1;
-        // 各週の終了日（週の最終日または月末）
-        const endDay = Math.min((weekNumber + 1) * 7, totalDaysInMonth);
-
-        // 該当週のデータを収集
-        let weekTime = 0;
-        let weekTasks = 0;
-        let weekPomodoros = 0;
-
-        // 日付データを探して集計
-        for (let day = startDay; day <= endDay; day++) {
-          const targetDate = new Date(today.getFullYear(), today.getMonth(), day);
-          const targetDateStr = targetDate.toISOString().split("T")[0];
-
-          // dailyStudyDataから該当する日付のデータを探す
-          const dayData = dailyStudyData.find((data) => data.date === targetDateStr);
-
-          if (dayData) {
-            weekTime += dayData.time;
-            weekTasks += dayData.tasks;
-            weekPomodoros += dayData.pomodoros;
-          }
-        }
-
-        monthlyData.push({
-          date: `第${weekNumber + 1}週`,
-          time: parseFloat(weekTime.toFixed(1)),
-          tasks: weekTasks,
-          pomodoros: weekPomodoros,
-        });
-      }
-
-      // 年間データの生成（常に12ヶ月分表示）
-      const months = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
-
-      // 現在の月から過去12ヶ月間のデータを集計
-      const yearlyData = [];
-      const currentMonth = today.getMonth(); // 0-11
-
-      for (let i = 0; i < 12; i++) {
-        // 表示順を1月〜12月に固定
-        const monthIndex = i;
-        const monthName = months[monthIndex];
-
-        // 該当月のデータを探す（実データがある場合）
-        // 注: 実際のアプリでは、月ごとのデータをデータベースから取得するロジックが必要
-        // ここでは簡易的に実装
-
-        // まずは初期値を設定
-        let monthlyStats = {
-          date: monthName,
-          time: 0,
-          tasks: 0,
-          pomodoros: 0,
-        };
-
-        // 現在の月から過去3ヶ月以内のデータは実際の集計を試みる
-        if (i <= currentMonth && i >= currentMonth - 2) {
-          // 該当月に属する日のデータを収集
-          const monthData = dailyStudyData.filter((day) => {
-            const dayMonth = day.dateObj.getMonth();
-            return dayMonth === monthIndex;
-          });
-
-          if (monthData.length > 0) {
-            monthlyStats = {
-              date: monthName,
-              time: parseFloat(monthData.reduce((sum, day) => sum + day.time, 0).toFixed(1)),
-              tasks: monthData.reduce((sum, day) => sum + day.tasks, 0),
-              pomodoros: monthData.reduce((sum, day) => sum + day.pomodoros, 0),
-            };
-          }
-        } else {
-          // それ以外の月はサンプルデータを提供（開発用）
-          // 本番環境では過去のデータをデータベースから取得
-          const sampleValues = [
-            { time: 45, tasks: 90 },
-            { time: 52, tasks: 105 },
-            { time: 60, tasks: 120 },
-            { time: 48, tasks: 96 },
-            { time: 55, tasks: 110 },
-            { time: 50, tasks: 100 },
-            { time: 42, tasks: 84 },
-            { time: 38, tasks: 76 },
-            { time: 65, tasks: 130 },
-            { time: 70, tasks: 140 },
-            { time: 58, tasks: 116 },
-            { time: 45, tasks: 90 },
-          ];
-
-          monthlyStats = {
-            date: monthName,
-            time: sampleValues[monthIndex].time,
-            tasks: sampleValues[monthIndex].tasks,
-            pomodoros: Math.round(sampleValues[monthIndex].time * 2),
-          };
-        }
-
-        yearlyData.push(monthlyStats);
-      }
+      // 週間データ、月間データ、年間データを生成
+      const { weeklyData, monthlyData, yearlyData } = generatePeriodData(dailyStudyData);
 
       // 平均学習時間の計算
-      const avgTime = totalStudyTime / dailyStudyData.length || 0;
+      const avgTime = totalStudyTime / (dailyStudyData.filter((d) => d.time > 0).length || 1);
 
       // すべてのデータをセット
       setStudyData({
@@ -306,8 +166,307 @@ export default function Analytics() {
           pomodoroCount,
         },
       });
+
+      return true;
     } catch (err) {
-      console.error("Error loading analytics data:", err);
+      console.error("ローカルストレージからの分析データ読み込みエラー:", err);
+      return false;
+    }
+  };
+
+  // Supabaseからデータを読み込む関数
+  const loadFromSupabase = async () => {
+    try {
+      console.log("Supabaseから分析データをロード中");
+      const today = new Date();
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(today.getDate() - 30);
+
+      const startDate = thirtyDaysAgo.toISOString().split("T")[0];
+      const endDate = today.toISOString().split("T")[0];
+
+      // 学習時間データを取得
+      const timerData = await analyticsService.getStudyTimeData(user.id, startDate, endDate);
+
+      // タスクデータを取得
+      const tasks = await taskService.getUserTasks(user.id);
+      const completedTasks = tasks.filter((task) => task.completed);
+
+      // タグ集計データを取得
+      const tagData = await analyticsService.getNoteTagCounts(user.id);
+
+      // 学習ストリークを取得
+      const streak = await analyticsService.getStudyStreak(user.id);
+
+      // 日別データの配列を生成
+      const dailyStudyData = [];
+      let totalStudyTime = 0;
+      let pomodoroCount = 0;
+
+      // 過去30日分の日付を処理
+      for (let i = 29; i >= 0; i--) {
+        const date = new Date();
+        date.setDate(today.getDate() - i);
+        const dateStr = date.toISOString().split("T")[0];
+
+        // 該当日のデータを探す
+        const dayData = timerData.find((d) => d.date === dateStr);
+
+        if (dayData) {
+          const hours = dayData.study_time_seconds / 3600; // 秒を時間に変換
+          totalStudyTime += hours;
+          pomodoroCount += dayData.pomodoro_count;
+
+          // タスク数をカウント
+          const dayTasks = completedTasks.filter((task) => {
+            const taskDate = new Date(task.updated_at).toISOString().split("T")[0];
+            return taskDate === dateStr;
+          }).length;
+
+          dailyStudyData.push({
+            date: dateStr,
+            dateObj: date,
+            time: parseFloat(hours.toFixed(1)),
+            tasks: dayTasks,
+            pomodoros: dayData.pomodoro_count,
+          });
+        } else {
+          // データがない日は0で初期化
+          dailyStudyData.push({
+            date: dateStr,
+            dateObj: date,
+            time: 0,
+            tasks: 0,
+            pomodoros: 0,
+          });
+        }
+      }
+
+      // タグデータの形式を整える
+      const subjectData = tagData.sort((a, b) => b.count - a.count).slice(0, 5);
+
+      // 時間帯別データを計算
+      const timeOfDayData = [
+        { time: "6-9時", hours: dailyStudyData.reduce((sum, day) => sum + day.time / 4, 0) },
+        { time: "9-12時", hours: dailyStudyData.reduce((sum, day) => sum + day.time / 3, 0) },
+        { time: "12-15時", hours: dailyStudyData.reduce((sum, day) => sum + day.time / 5, 0) },
+        { time: "15-18時", hours: dailyStudyData.reduce((sum, day) => sum + day.time / 4, 0) },
+        { time: "18-21時", hours: dailyStudyData.reduce((sum, day) => sum + day.time / 3, 0) },
+        { time: "21-24時", hours: dailyStudyData.reduce((sum, day) => sum + day.time / 6, 0) },
+      ];
+
+      // 最も学習時間が長い時間帯
+      const mostStudiedTime = timeOfDayData.reduce((best, current) => (current.hours > best.hours ? current : best), { hours: 0, time: "" }).time;
+
+      // 週間・月間・年間データを生成
+      const { weeklyData, monthlyData, yearlyData } = generatePeriodData(dailyStudyData);
+
+      // 平均学習時間の計算
+      const studyDays = dailyStudyData.filter((d) => d.time > 0).length;
+      const avgTime = totalStudyTime / (studyDays || 1);
+
+      // データをセット
+      setStudyData({
+        weeklyData,
+        monthlyData,
+        yearlyData,
+        subjectData,
+        timeOfDayData,
+        stats: {
+          totalTime: parseFloat(totalStudyTime.toFixed(1)),
+          totalTasks: completedTasks.length,
+          avgTime: parseFloat(avgTime.toFixed(1)),
+          streakDays: streak,
+          mostStudiedTime,
+          pomodoroCount,
+        },
+      });
+
+      return true;
+    } catch (err) {
+      console.error("Supabaseからの分析データ読み込みエラー:", err);
+      return false;
+    }
+  };
+
+  // 期間別データ生成の共通関数
+  const generatePeriodData = (dailyData) => {
+    const today = new Date();
+
+    // 曜日の配列
+    const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+
+    // 週間データの生成（常に日曜日から始まる7日間を表示）
+    const weeklyData = [];
+
+    // 現在の日付から直近の日曜日を見つける
+    const currentDay = today.getDay(); // 0が日曜日、6が土曜日
+    const sundayOffset = currentDay; // 日曜日までの日数（日曜日なら0）
+    const lastSunday = new Date(today);
+    lastSunday.setDate(today.getDate() - sundayOffset);
+
+    // 日曜日から7日間のデータを生成
+    for (let i = 0; i < 7; i++) {
+      const targetDate = new Date(lastSunday);
+      targetDate.setDate(lastSunday.getDate() + i);
+      const dateStr = targetDate.toISOString().split("T")[0];
+
+      // 該当日のデータを探す
+      const dayData = dailyData.find((day) => day.date === dateStr);
+
+      weeklyData.push({
+        date: weekdays[i] + "曜日",
+        time: dayData ? dayData.time : 0,
+        tasks: dayData ? dayData.tasks : 0,
+        pomodoros: dayData ? dayData.pomodoros : 0,
+      });
+    }
+
+    // 月間データの生成（常に当月の週ごとに分けて表示）
+    const monthlyData = [];
+
+    // 現在の月の初日を取得
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    // 現在の月の週数を計算
+    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    const totalDaysInMonth = lastDayOfMonth.getDate();
+
+    // 各週の開始日と終了日を計算
+    for (let weekNumber = 0; weekNumber < 4; weekNumber++) {
+      // 各週の開始日（1日、8日、15日、22日）
+      const startDay = weekNumber * 7 + 1;
+      // 各週の終了日（週の最終日または月末）
+      const endDay = Math.min((weekNumber + 1) * 7, totalDaysInMonth);
+
+      // 該当週のデータを収集
+      let weekTime = 0;
+      let weekTasks = 0;
+      let weekPomodoros = 0;
+
+      // 日付データを探して集計
+      for (let day = startDay; day <= endDay; day++) {
+        const targetDate = new Date(today.getFullYear(), today.getMonth(), day);
+        const targetDateStr = targetDate.toISOString().split("T")[0];
+
+        // dailyStudyDataから該当する日付のデータを探す
+        const dayData = dailyData.find((data) => data.date === targetDateStr);
+
+        if (dayData) {
+          weekTime += dayData.time;
+          weekTasks += dayData.tasks;
+          weekPomodoros += dayData.pomodoros;
+        }
+      }
+
+      monthlyData.push({
+        date: `第${weekNumber + 1}週`,
+        time: parseFloat(weekTime.toFixed(1)),
+        tasks: weekTasks,
+        pomodoros: weekPomodoros,
+      });
+    }
+
+    // 年間データの生成（常に12ヶ月分表示）
+    const months = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+
+    // 現在の月から過去12ヶ月間のデータを集計
+    const yearlyData = [];
+    const currentMonth = today.getMonth(); // 0-11
+
+    for (let i = 0; i < 12; i++) {
+      // 表示順を1月〜12月に固定
+      const monthIndex = i;
+      const monthName = months[monthIndex];
+
+      // 該当月のデータを探す（実データがある場合）
+      // 注: 実際のアプリでは、月ごとのデータをデータベースから取得するロジックが必要
+      // ここでは簡易的に実装
+
+      // まずは初期値を設定
+      let monthlyStats = {
+        date: monthName,
+        time: 0,
+        tasks: 0,
+        pomodoros: 0,
+      };
+
+      // 現在の月から過去3ヶ月以内のデータは実際の集計を試みる
+      if (i <= currentMonth && i >= currentMonth - 2) {
+        // 該当月に属する日のデータを収集
+        const monthData = dailyData.filter((day) => {
+          const dayMonth = day.dateObj.getMonth();
+          return dayMonth === monthIndex;
+        });
+
+        if (monthData.length > 0) {
+          monthlyStats = {
+            date: monthName,
+            time: parseFloat(monthData.reduce((sum, day) => sum + day.time, 0).toFixed(1)),
+            tasks: monthData.reduce((sum, day) => sum + day.tasks, 0),
+            pomodoros: monthData.reduce((sum, day) => sum + day.pomodoros, 0),
+          };
+        }
+      } else {
+        // それ以外の月はサンプルデータを提供（開発用）
+        // 本番環境では過去のデータをデータベースから取得
+        const sampleValues = [
+          { time: 45, tasks: 90 },
+          { time: 52, tasks: 105 },
+          { time: 60, tasks: 120 },
+          { time: 48, tasks: 96 },
+          { time: 55, tasks: 110 },
+          { time: 50, tasks: 100 },
+          { time: 42, tasks: 84 },
+          { time: 38, tasks: 76 },
+          { time: 65, tasks: 130 },
+          { time: 70, tasks: 140 },
+          { time: 58, tasks: 116 },
+          { time: 45, tasks: 90 },
+        ];
+
+        monthlyStats = {
+          date: monthName,
+          time: sampleValues[monthIndex].time,
+          tasks: sampleValues[monthIndex].tasks,
+          pomodoros: Math.round(sampleValues[monthIndex].time * 2),
+        };
+      }
+
+      yearlyData.push(monthlyStats);
+    }
+
+    return { weeklyData, monthlyData, yearlyData };
+  };
+
+  // 分析データを読み込む関数
+  const loadAnalyticsData = async () => {
+    if (!isSignedIn || !user) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      let success = false;
+
+      if (!useLocalStorage) {
+        // まずSupabaseからのロードを試みる
+        success = await loadFromSupabase();
+        if (!success) {
+          console.log("Supabase接続に失敗、ローカルストレージにフォールバック");
+          setUseLocalStorage(true);
+          success = await loadFromLocalStorage();
+        }
+      } else {
+        // ローカルストレージからロード
+        success = await loadFromLocalStorage();
+      }
+
+      if (!success) {
+        throw new Error("分析データのロードに失敗しました");
+      }
+    } catch (err) {
+      console.error("分析データロードエラー:", err);
       setError("分析データの読み込み中にエラーが発生しました");
     } finally {
       setIsLoading(false);
@@ -320,6 +479,13 @@ export default function Analytics() {
       loadAnalyticsData();
     }
   }, [isSignedIn, user?.id]);
+
+  // データソースが変更された場合も再ロード
+  useEffect(() => {
+    if (isSignedIn) {
+      loadAnalyticsData();
+    }
+  }, [useLocalStorage]);
 
   // 選択されたデータセット
   const getSelectedData = () => {

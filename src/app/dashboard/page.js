@@ -406,22 +406,6 @@ export default function Dashboard() {
               </Link>
             </div>
           </div>
-
-          {/* データソース情報 */}
-          <div className="bg-white p-6 rounded-lg shadow mt-8">
-            <h2 className="text-lg font-medium mb-4">データソース情報</h2>
-            <div className="flex items-center">
-              <div className={`w-3 h-3 rounded-full mr-2 ${useLocalStorage ? "bg-yellow-500" : "bg-green-500"}`}></div>
-              <p>
-                現在のデータソース: <strong>{useLocalStorage ? "ローカルストレージ" : "Supabase"}</strong>
-                {useLocalStorage && (
-                  <button onClick={() => setUseLocalStorage(false)} className="ml-4 text-indigo-600 hover:text-indigo-800 text-sm underline">
-                    Supabaseに再接続を試みる
-                  </button>
-                )}
-              </p>
-            </div>
-          </div>
         </>
       )}
     </div>
